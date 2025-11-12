@@ -65,6 +65,7 @@ const App: React.FC = () => {
     const [callStatus, setCallStatus] = useState<'idle' | 'connecting' | 'connected' | 'ended' | 'error'>('idle');
     const [callDuration, setCallDuration] = useState(0);
     const [isMuted, setIsMuted] = useState(false);
+    const [hasRecordedAudio, setHasRecordedAudio] = useState(false); // لتتبع وجود صوت مسجل
 
     const liveSessionRef = useRef<LiveSession | null>(null);
     const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -75,6 +76,7 @@ const App: React.FC = () => {
     const nextStartTimeRef = useRef(0);
     const currentInputTranscriptionRef = useRef('');
     const currentOutputTranscriptionRef = useRef('');
+    const recordedAudioChunksRef = useRef<string[]>([]); // لتخزين أجزاء الصوت الواردة من Gemini
 
     // Theme Effect
     useEffect(() => {
@@ -211,7 +213,8 @@ const App: React.FC = () => {
 
     const handleFunctionCall = useCallback((functionCall: FunctionCall) => {
         if (functionCall.name === 'add_word_to_pending_list') {
-            const { hassaniya_word, arabic_meaning, part_of_speech } = functionCall.args;
+            const args = functionCall.args as { hassaniya_word?: string; arabic_meaning?: string; part_of_speech?: string };
+            const { hassaniya_word, arabic_meaning, part_of_speech } = args;
             if (hassaniya_word && arabic_meaning && part_of_speech) {
                 addWordToPending({
                     hassaniya: hassaniya_word,
@@ -221,15 +224,17 @@ const App: React.FC = () => {
             }
         }
         if (functionCall.name === 'suggest_word_for_exclusion') {
-            const { incorrect_word, suggested_replacement } = functionCall.args;
+            const args = functionCall.args as { incorrect_word?: string; suggested_replacement?: string };
+            const { incorrect_word, suggested_replacement } = args;
             if (incorrect_word && suggested_replacement) {
                 addPendingExclusion(incorrect_word, suggested_replacement);
             }
         }
         if (functionCall.name === 'add_word_to_exclusion_list') {
-            const { original_word, replacement_word } = functionCall.args;
+            const args = functionCall.args as { original_word?: string; replacement_word?: string };
+            const { original_word, replacement_word } = args;
             if (original_word) {
-                addReplacementRule(original_word, replacement_word);
+                addReplacementRule(original_word, replacement_word || '');
             }
         }
     }, [addWordToPending, addPendingExclusion, addReplacementRule]);
@@ -309,6 +314,107 @@ const App: React.FC = () => {
         }
     }, [setUserStyleProfile, handleSuccess, handleError]);
 
+    // دالة لدمج وتنزيل صوت المكالمة
+    const downloadCallAudio = useCallback(async () => {
+        if (recordedAudioChunksRef.current.length === 0) {
+            handleError("لا يوجد صوت مسجل للتنزيل.");
+            return;
+        }
+
+        try {
+            setLoading('download-audio', true);
+            
+            // إنشاء AudioContext لدمج الصوت
+            const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+            const audioBuffers: AudioBuffer[] = [];
+
+            // فك تشفير جميع أجزاء الصوت
+            for (const base64Audio of recordedAudioChunksRef.current) {
+                const audioData = geminiService.decode(base64Audio);
+                const audioBuffer = await geminiService.decodeAudioData(audioData, audioContext, 24000, 1);
+                audioBuffers.push(audioBuffer);
+            }
+
+            // حساب الطول الإجمالي
+            const totalLength = audioBuffers.reduce((sum, buffer) => sum + buffer.length, 0);
+            
+            // إنشاء buffer جديد لدمج كل الأجزاء
+            const mergedBuffer = audioContext.createBuffer(1, totalLength, 24000);
+            let offset = 0;
+            for (const buffer of audioBuffers) {
+                mergedBuffer.copyToChannel(buffer.getChannelData(0), 0, offset);
+                offset += buffer.length;
+            }
+
+            // تحويل AudioBuffer إلى WAV
+            const wav = audioBufferToWav(mergedBuffer);
+            const blob = new Blob([wav], { type: 'audio/wav' });
+            
+            // إنشاء رابط تنزيل
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `مكالمة-حسانية-${new Date().toISOString().replace(/[:.]/g, '-')}.wav`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            handleSuccess("تم تنزيل صوت المكالمة بنجاح.");
+        } catch (error: any) {
+            console.error("Error downloading audio:", error);
+            handleError(error.message || "فشل تنزيل صوت المكالمة.");
+        } finally {
+            setLoading('download-audio', false);
+        }
+    }, [handleError, handleSuccess, setLoading]);
+
+    // دالة مساعدة لتحويل AudioBuffer إلى WAV
+    const audioBufferToWav = (buffer: AudioBuffer): ArrayBuffer => {
+        const length = buffer.length;
+        const numberOfChannels = buffer.numberOfChannels;
+        const sampleRate = buffer.sampleRate;
+        const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
+        const view = new DataView(arrayBuffer);
+        const channels: Float32Array[] = [];
+        
+        for (let i = 0; i < numberOfChannels; i++) {
+            channels.push(buffer.getChannelData(i));
+        }
+
+        // WAV header
+        const writeString = (offset: number, string: string) => {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        };
+
+        writeString(0, 'RIFF');
+        view.setUint32(4, 36 + length * numberOfChannels * 2, true);
+        writeString(8, 'WAVE');
+        writeString(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, numberOfChannels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * numberOfChannels * 2, true);
+        view.setUint16(32, numberOfChannels * 2, true);
+        view.setUint16(34, 16, true);
+        writeString(36, 'data');
+        view.setUint32(40, length * numberOfChannels * 2, true);
+
+        // PCM data
+        let offset = 44;
+        for (let i = 0; i < length; i++) {
+            for (let channel = 0; channel < numberOfChannels; channel++) {
+                const sample = Math.max(-1, Math.min(1, channels[channel][i]));
+                view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                offset += 2;
+            }
+        }
+
+        return arrayBuffer;
+    };
 
     const toggleLiveSession = useCallback(async (options: { script?: string | null, customInstructions: string, useKnowledge: boolean, knowledgeBase: KnowledgeDocument[], userStyleProfile: string }) => {
         if (isLiveSessionActive) {
@@ -323,6 +429,8 @@ const App: React.FC = () => {
             setLiveTranscript([]);
             currentInputTranscriptionRef.current = '';
             currentOutputTranscriptionRef.current = '';
+            recordedAudioChunksRef.current = []; // مسح الصوت المسجل السابق
+            setHasRecordedAudio(false); // إعادة تعيين حالة الصوت المسجل
             
             const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
             inputAudioContextRef.current = new AudioContext({ sampleRate: 16000 });
@@ -383,6 +491,10 @@ const App: React.FC = () => {
 
                     const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
                     if (base64Audio) {
+                        // حفظ الصوت للتنزيل لاحقاً
+                        recordedAudioChunksRef.current.push(base64Audio);
+                        setHasRecordedAudio(true); // تحديث حالة وجود صوت مسجل
+                        
                         const outputCtx = outputAudioContextRef.current!;
                         nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
                         const audioBuffer = await geminiService.decodeAudioData(geminiService.decode(base64Audio), outputCtx, 24000, 1);
@@ -530,6 +642,8 @@ const App: React.FC = () => {
                         setUseWebSearchForLive={setUseWebSearchForLive}
                         useKnowledgeForLive={useKnowledgeForLive}
                         setUseKnowledgeForLive={setUseKnowledgeForLive}
+                        downloadCallAudio={downloadCallAudio}
+                        hasRecordedAudio={hasRecordedAudio}
                     />
                 ) : (
                 <>
@@ -602,6 +716,8 @@ const App: React.FC = () => {
                         useKnowledgeForLive={useKnowledgeForLive}
                         setUseKnowledgeForLive={setUseKnowledgeForLive}
                         userStyleProfile={userStyleProfile}
+                        downloadCallAudio={downloadCallAudio}
+                        hasRecordedAudio={hasRecordedAudio}
                     />
                 }
                  {view === 'chat' &&

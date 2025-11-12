@@ -27,6 +27,8 @@ interface SimpleUserViewProps {
     setUseWebSearchForLive: React.Dispatch<React.SetStateAction<boolean>>;
     useKnowledgeForLive: boolean;
     setUseKnowledgeForLive: React.Dispatch<React.SetStateAction<boolean>>;
+    downloadCallAudio: () => Promise<void>;
+    hasRecordedAudio: boolean;
 }
 
 const SimpleUserView: React.FC<SimpleUserViewProps> = ({
@@ -52,6 +54,8 @@ const SimpleUserView: React.FC<SimpleUserViewProps> = ({
     setUseWebSearchForLive,
     useKnowledgeForLive,
     setUseKnowledgeForLive,
+    downloadCallAudio,
+    hasRecordedAudio,
 }) => (
     <div className="flex flex-col gap-4 lg:flex-row">
         <div className="flex-1 flex flex-col min-h-[32rem]">
@@ -90,6 +94,8 @@ const SimpleUserView: React.FC<SimpleUserViewProps> = ({
                 useKnowledgeForLive={useKnowledgeForLive}
                 setUseKnowledgeForLive={setUseKnowledgeForLive}
                 userStyleProfile={userStyleProfile}
+                downloadCallAudio={downloadCallAudio}
+                hasRecordedAudio={hasRecordedAudio}
             />
         </div>
     </div>

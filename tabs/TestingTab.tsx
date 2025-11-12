@@ -2,7 +2,7 @@ import React, { useState, FC, useRef, ChangeEvent } from 'react';
 import { WordEntry, KnowledgeDocument } from '../types';
 import * as geminiService from '../services/geminiService';
 import { Card, Button, Loader, PageLoader, ToggleButton } from '../components/UI';
-import { MicIcon, PlayIcon, UploadIcon, XIcon, DatabaseIcon, GlobeIcon, AcademicCapIcon } from '../components/Icons';
+import { MicIcon, PlayIcon, UploadIcon, XIcon, DatabaseIcon, GlobeIcon, AcademicCapIcon, DownloadIcon } from '../components/Icons';
 
 interface TranscriptEntry {
     speaker: 'user' | 'model';
@@ -29,6 +29,8 @@ interface TestingTabProps {
     useKnowledgeForLive: boolean;
     setUseKnowledgeForLive: React.Dispatch<React.SetStateAction<boolean>>;
     userStyleProfile: string;
+    downloadCallAudio?: () => Promise<void>;
+    hasRecordedAudio?: boolean;
     variant?: TestingTabVariant;
 }
 
@@ -38,6 +40,8 @@ const TestingTab: FC<TestingTabProps> = ({
     useDatabaseForLive, setUseDatabaseForLive, useWebSearchForLive, setUseWebSearchForLive,
     customInstructions, knowledgeBase, useKnowledgeForLive, setUseKnowledgeForLive,
     userStyleProfile,
+    downloadCallAudio,
+    hasRecordedAudio = false,
     variant = 'full'
 }) => {
     const [sentence, setSentence] = useState('');
@@ -243,7 +247,20 @@ const TestingTab: FC<TestingTabProps> = ({
                 
                 {(isLiveSessionActive || liveTranscript.length > 0) && (
                     <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                        <h3 className="text-md font-semibold mb-2 text-center">نص المكالمة</h3>
+                        <div className="flex items-center justify-between mb-2">
+                            <h3 className="text-md font-semibold">نص المكالمة</h3>
+                            {downloadCallAudio && !isLiveSessionActive && hasRecordedAudio && (
+                                <Button 
+                                    onClick={downloadCallAudio} 
+                                    variant="secondary" 
+                                    disabled={loadingStates['download-audio']}
+                                    className="gap-2"
+                                >
+                                    {loadingStates['download-audio'] ? <Loader /> : <DownloadIcon />}
+                                    <span>تنزيل صوت المكالمة</span>
+                                </Button>
+                            )}
+                        </div>
                         <div className="space-y-3 max-h-60 overflow-y-auto p-2 bg-gray-50 dark:bg-gray-900 rounded-md">
                             {liveTranscript.map((entry, index) => (
                                 <div key={index} className={`flex ${entry.speaker === 'user' ? 'justify-end' : 'justify-start'}`}>
